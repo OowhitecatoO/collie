@@ -155,6 +155,14 @@
 // A probe that fails, goes out again with one Backspace and leaves text in the box proves a real
 // draft that is not Collie's (a stale row painted over the live box row): the send ends
 // `draft_present` with the draft's offers, never held (2026-10-26).
+// A box whose whole text is Collie's own probe characters is the one exception to the stale verdict
+// (#623, 2026-10-31): the agent took those keys and drew them, only later than the probe looked. A
+// harness that is busy for seconds (Claude Code 2.1.314 with a subagent running under its agents
+// footer) draws a probe long after its reads end, so the first send ends `probe_failed` with the box
+// empty, and the next one finds the late characters. When that box's own proof fails the same way, the
+// refusal carries the cause `late_keys` and says to wait and send again, not to redraw the pane; the
+// keys and the stale mark are the same as above. A late box is a reading of one moment, not a fix:
+// the send is still refused, and the next send takes the characters out once the agent draws again.
 //
 // A placeholder on a read with no styling (M78 spec 06, 2026-10-30): a multiplexer that hands out plain
 // text (herdr-core) drops the faint attribute and the colour that mark an empty box's placeholder, so a
@@ -1556,6 +1564,14 @@ const NOTICE_NOT_TAKEN = "The notice did not take the number. Check the pane.";
 const NOTICE_KEY: SendCause = "notice_key";
 /** The cause of a refusal on a screen whose input box does not take keys (2026-10-25). */
 const STALE_CAUSE: SendCause = "stale_screen";
+/** The cause of that refusal when the box held only Collie's probe characters: they showed late (#623). */
+const LATE_CAUSE: SendCause = "late_keys";
+/**
+ * The detail of a `late_keys` refusal: the box held only Collie's earlier probe characters, which the
+ * agent drew after the probe's reads had ended, and its proof did not show in time either (#623).
+ */
+const LATE_KEYS =
+  "The box holds only Collie's earlier probe characters: the agent took those keys but showed them late, so it may be busy. Wait a moment, then send again. Collie takes them out first.";
 
 /**
  * The refusal of a send whose box would hold one of a notice's digits alone where no commit can go
@@ -4120,6 +4136,8 @@ export class SendProtocol {
   private async proveDraft(state: RunState, s0: Snap): Promise<Snap> {
     const probe = probeCharOf(state.match);
     const before = countIn(s0.texts, probe);
+    // A box of Collie's own probe characters only: they showed late, so a failed proof is `late_keys` (#623).
+    const late = s0.frame !== null && probeResidue(boxText(s0.frame), probe) > 0;
     // The probe, then its Backspace, each with the probe's own bound.
     this.stretch(state, 2 * BOUNDS.probe.ms);
     const first = await this.draftProbe(state, s0, probe);
@@ -4138,19 +4156,19 @@ export class SendProtocol {
     let fresh = await this.stableRead(state, "s0");
     // A probe that showed nowhere may show now that the screen drew again: it is taken back first.
     if (first.landing === "nowhere") {
-      if (countIn(fresh.texts, probe) !== before + 1) throw this.staleScreen(state, fresh, probe);
+      if (countIn(fresh.texts, probe) !== before + 1) throw this.staleScreen(state, fresh, probe, late);
       fresh = await this.takeBack(state, before, probe);
     }
     const { frame } = fresh;
     if (frame === null || fresh.surface.composer !== "draft" || boxText(frame).length === 0) return fresh;
     // The same rows again: nothing mended the screen, and a second probe would only say so twice.
     if (s0.frame !== null && frameImageKey(fresh.texts, frame.top, frame.bottom) === frameImageKey(s0.texts, s0.frame.top, s0.frame.bottom)) {
-      throw this.staleScreen(state, fresh, null);
+      throw this.staleScreen(state, fresh, null, late);
     }
     const again = await this.draftProbe(state, fresh, probe);
     if (again.landing === "live") return again.snap;
     if (again.landing === "ghost") return this.ghostProven(state, fresh, again.snap);
-    throw this.staleScreen(state, state.lastRead ?? fresh, again.landing === "nowhere" ? probe : null);
+    throw this.staleScreen(state, state.lastRead ?? fresh, again.landing === "nowhere" ? probe : null, late);
   }
 
   /**
@@ -4254,8 +4272,10 @@ export class SendProtocol {
    * The refusal of a box that does not take keys (the header): `probe_failed`, the cause `stale_screen`,
    * the key pad as the offer, nothing deleted. `probe` names a probe character that showed nowhere and
    * may still stand in the live editor. The bridge's Surface is told which box rows were proven stale.
+   * `late`: the box held only Collie's probe characters, so the cause is `late_keys` and the detail says
+   * to wait (#623); everything else is the same.
    */
-  private staleScreen(state: RunState, snap: Snap, probe: string | null): Ended {
+  private staleScreen(state: RunState, snap: Snap, probe: string | null, late = false): Ended {
     const { frame } = snap;
     if (frame !== null) {
       try {
@@ -4265,8 +4285,9 @@ export class SendProtocol {
       }
     }
     if (probe !== null) this.notePending(state);
-    const detail = probe === null ? STALE_SCREEN : `${STALE_SCREEN} ${probeMayRemain(probe)}`;
-    return new Ended("refused", "probe_failed", sawNote(snap, { detail, framed: true, offers: ["keys"], cause: STALE_CAUSE }));
+    const head = late ? LATE_KEYS : STALE_SCREEN;
+    const detail = probe === null ? head : `${head} ${probeMayRemain(probe)}`;
+    return new Ended("refused", "probe_failed", sawNote(snap, { detail, framed: true, offers: ["keys"], cause: late ? LATE_CAUSE : STALE_CAUSE }));
   }
 
   /**
