@@ -27,6 +27,8 @@ Running a crew? Update the lead first; members follow on their own. Details:
 
 - **A message with rule rows now reaches pi.** A message with a line of `────` of its own, such as a table border or a markdown rule, was typed into pi's box in full and then left there unsent. Collie took the typed rule for the top edge of pi's box and read only the text under it. Collie now reads a rule that is narrower than the box as part of your message. A typed rule as wide as the box still reads as the box edge.
 
+- **Two paragraphs sent to Claude Code while it works now go out under tmux.** With tmux focus-events off, which is the tmux default, Claude Code shows a notice under its footer while a turn runs and drops it once the box holds more than one paragraph. Collie read the lost row as a changed screen and left a message of two paragraphs typed but not sent. Collie now ignores that notice row, as it ignores the usage-limit row. A new row under the box still stops a send.
+
 ## [1.25.4] - 2026-11-01
 
 ### Fixed
