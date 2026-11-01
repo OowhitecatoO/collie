@@ -79,12 +79,13 @@ describe("HerdrCoreMux over a fake core", () => {
 
   test("a key batch keeps its order across raw characters and key names", async () => {
     const { fake, adapter } = build();
-    const sent = await adapter.writeKeys("t2", ["Up", "$", "Enter", "Enter"]);
+    const sent = await adapter.writeKeys("t2", ["Up", "$", "Enter", "PageUp"]);
     expect(sent.ok).toBe(true);
     expect(fake.writes().map((w) => [w.kind, w.payload])).toEqual([
       ["keys", ["up"]],
       ["text", ["$"]],
-      ["keys", ["enter", "enter"]],
+      ["text", ["\r"]],
+      ["keys", ["pageup"]],
     ]);
   });
 
