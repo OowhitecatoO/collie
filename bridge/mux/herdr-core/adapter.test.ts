@@ -236,9 +236,33 @@ describe("the raw key gap (RAW_KEY_GAP_MS)", () => {
     clock.ms += 200;
     await adapter.writeKeys("t2", ["Enter"]);
     expect(waits).toEqual([]);
+    await adapter.typeText("t2", "x");
     clock.ms += 100;
     await adapter.writeKeys("t2", ["Backspace"]);
     expect(waits).toEqual([RAW_KEY_GAP_MS - 100]);
+  });
+
+  test("a run of ten raw Backspaces after one text write waits once, not ten times", async () => {
+    const { fake, adapter, clock, waits } = paced();
+    clock.ms = 1000;
+    await adapter.typeText("t2", "beltdraft");
+    const sent = await adapter.writeKeys("t2", Array.from({ length: 10 }, () => "Backspace"));
+    expect(sent.ok).toBe(true);
+    expect(waits).toEqual([RAW_KEY_GAP_MS]);
+    expect(clock.now()).toBe(1000 + RAW_KEY_GAP_MS);
+    expect(fake.writes().filter((w) => w.kind === "text" && w.payload[0] === "\x7f")).toHaveLength(10);
+  });
+
+  test("a raw key right after another raw key goes at once, and text after them arms the gap again", async () => {
+    const { adapter, waits } = paced();
+    await adapter.typeText("t2", "x");
+    await adapter.writeKeys("t2", ["Backspace"]);
+    await adapter.writeKeys("t2", ["Enter"]);
+    await adapter.writeKeys("t2", ["Tab"]);
+    expect(waits).toEqual([RAW_KEY_GAP_MS]);
+    await adapter.typeText("t2", "y");
+    await adapter.writeKeys("t2", ["Enter"]);
+    expect(waits).toEqual([RAW_KEY_GAP_MS, RAW_KEY_GAP_MS]);
   });
 
   test("a pane that was never written to, and another pane's write, add no wait", async () => {
