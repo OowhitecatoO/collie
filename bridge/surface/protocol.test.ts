@@ -6294,6 +6294,161 @@ describe("OMP 18.12.6 `/plan` with plan mode on, replayed from the real capture 
   });
 });
 
+// M80 spec 04 (lab, 2026-11-01): the canary's `15-rule` message to pi 1.4.0, over tmux at 120 columns and over
+// Herdr alike, ended typed_not_submitted (mismatch) with the whole text in the box. The rows of the
+// message stood in the box as typed; the frame reader took its last typed rule (20 cells) for the box's
+// top edge, so the box read `end`. The captures are the lab's reads of one send through this protocol: the
+// empty box, the probe in it, the text typed, and the read after Enter (taken once the reader was fixed).
+// Kept beside this test like the OMP captures above. The lab's project path is shortened to `~/project`.
+describe("pi 1.4.0, a message with rule rows (`────`), replayed from the real capture (M80 spec 04)", () => {
+  const FIXTURES = join(import.meta.dir, "fixtures");
+  const capture = (name: string): string => readFileSync(join(FIXTURES, `pi--v140-rule-rows-${name}--w120.txt`), "utf8");
+  // eslint-disable-next-line no-control-regex
+  const SGR = /\u001b\[[0-9;:]*m/gu;
+  const RULE20 = "────────────────────";
+  const TEXT = `Reply with only OK.\n${RULE20}\nsome text\n${RULE20}\nend`;
+  /** A pi pane whose every read is a capture: the empty box, the probe, the typed text (or `typed`), or the read after alt+Enter. */
+  const replay = (typed: string): FakePane => {
+    const pane = new FakePane("claude");
+    let entered = false;
+    pane.afterInput = (_p, what) => {
+      if (what.startsWith("keys:") && what.includes("alt+Enter")) entered = true;
+    };
+    pane.beforeRead = (p) => {
+      if (entered) p.fixed = capture("sent");
+      else if (p.box === "") p.fixed = capture("empty");
+      else if (p.box === PROBE) p.fixed = capture("probe");
+      else if (p.box === TEXT) p.fixed = typed;
+      else throw new Error(`the lab never saw the box hold ${JSON.stringify(p.box)}`);
+    };
+    return pane;
+  };
+
+  test("rule rows to pi: the capture holds the message's rows in the box, its two rules narrower than the box edges", () => {
+    const rows = capture("typed").replace(SGR, "").split("\n");
+    const edges = rows.filter((row) => /^─{100,}$/u.test(row.trimEnd()));
+    expect(edges).toHaveLength(2);
+    expect(rows.filter((row) => row.trimEnd() === RULE20)).toHaveLength(2);
+    expect(rows.findIndex((row) => row.startsWith("Reply with only OK."))).toBe(rows.indexOf(edges[0]!) + 1);
+  });
+
+  test("rule rows to pi: the typed rules are draft rows, not the box's top edge; sent with one alt+Enter", async () => {
+    const pane = replay(capture("typed"));
+    const answer = await rig({ pane, harness: "pi", version: "1.4.0" }).send(TEXT);
+    expect(answer.receipt).toMatchObject({ outcome: "sent" });
+    expect(answer.receipt?.reason).toBeUndefined();
+    expect(answer.receipt?.keys.at(-1)).toBe("alt+Enter");
+    expect(pane.keysSeen.filter((key) => key === "alt+Enter")).toHaveLength(1);
+    neverEscape(pane);
+  });
+
+  test("rule rows to pi, a box with a different word: a mismatch, never submitted", async () => {
+    const typed = capture("typed").replace("some text", "some test");
+    expect(typed).not.toBe(capture("typed"));
+    const pane = replay(typed);
+    const answer = await rig({ pane, harness: "pi", version: "1.4.0" }).send(TEXT);
+    expect(answer.receipt).toMatchObject({ outcome: "typed_not_submitted", reason: "mismatch" });
+    expect(pane.keysSeen).not.toContain("alt+Enter");
+  });
+
+  test("rule rows to pi, a box with one row missing: a mismatch, never submitted", async () => {
+    const rows = capture("typed").split("\n");
+    const at = rows.findIndex((row) => row.replace(SGR, "").startsWith("some text"));
+    expect(at).toBeGreaterThan(0);
+    const pane = replay(["", ...rows.slice(0, at), ...rows.slice(at + 1)].join("\n"));
+    const answer = await rig({ pane, harness: "pi", version: "1.4.0" }).send(TEXT);
+    expect(answer.receipt).toMatchObject({ outcome: "typed_not_submitted", reason: "mismatch" });
+    expect(pane.keysSeen).not.toContain("alt+Enter");
+  });
+});
+
+// M80 spec 06 (lab, 2026-11-01): a two-paragraph message to Claude Code 2.1.316 while its turn runs, over
+// tmux at 100 columns. The turn was held by a local stand-in for the model API, so no model turn ran. tmux
+// keeps focus-events off by default, and Claude then draws a notice row under its footer while the turn runs.
+// Once the box holds the two paragraphs, Claude swaps its footer for "ctrl+g to edit in nano" and drops that
+// notice: the rows under the box went from 2 to 1 and the send ended typed_not_submitted (changed). The box
+// itself always held the text: its continuation rows are indented two cells and the paragraphs are parted
+// by a blank row, and the compare reads past white space. The same send with focus-events on, into an idle
+// box, and over Herdr was sent. The captures are the lab's reads of one send through this protocol, taken
+// once the profile named the notice as a hint row. The lab's project path is shortened to `~/project`.
+describe("Claude Code 2.1.316, two paragraphs into a running turn, replayed from the real capture (M80 spec 06)", () => {
+  const FIXTURES = join(import.meta.dir, "fixtures");
+  const capture = (name: string): string => readFileSync(join(FIXTURES, `claude--v2316-two-paragraphs-${name}--w100.txt`), "utf8");
+  // eslint-disable-next-line no-control-regex
+  const SGR = /\u001b\[[0-9;:]*m/gu;
+  const TEXT =
+    "also the mobile layout looks off when the sheet opens over the keyboard, the header slides under the status bar and the close button is out of reach\n\nmenu should be one tap from the composer, not two";
+  const replay = (typed: string): FakePane => {
+    const pane = new FakePane("claude");
+    // The lab's Claude drew the 196 characters as typed: the fake folds no paste.
+    pane.collapseOver = 100_000;
+    let entered = false;
+    pane.afterInput = (_p, what) => {
+      if (what === "keys:Enter") entered = true;
+    };
+    pane.beforeRead = (p) => {
+      if (entered) p.fixed = capture("queued");
+      else if (p.box === "") p.fixed = capture("running");
+      else if (p.box === PROBE) p.fixed = capture("probe");
+      else if (p.box === TEXT) p.fixed = typed;
+      else throw new Error(`the lab never saw the box hold ${JSON.stringify(p.box)}`);
+    };
+    return pane;
+  };
+  const plainRows = (name: string): string[] => capture(name).replace(SGR, "").split("\n");
+
+  test("two paragraphs to claude: the captures show the indented rows, the blank row between, and the notice gone with the draft", () => {
+    const typed = plainRows("typed");
+    const first = typed.findIndex((row) => row.startsWith("❯ also the mobile layout"));
+    expect(typed[first + 1]).toMatch(/^ {2}\S/u);
+    expect(typed[first + 2]!.trim()).toBe("");
+    expect(typed[first + 3]).toMatch(/^ {2}menu should be one tap/u);
+    expect(plainRows("running").some((row) => row.includes("tmux focus-events off"))).toBe(true);
+    expect(typed.some((row) => row.includes("tmux focus-events off"))).toBe(false);
+    expect(typed.some((row) => row.includes("ctrl+g to edit in nano"))).toBe(true);
+  });
+
+  test("two paragraphs to claude mid-turn: the box holds the text, the notice under the footer is a hint row; queued with one Enter", async () => {
+    const pane = replay(capture("typed"));
+    const answer = await rig({ pane, version: "2.1.316" }).send(TEXT);
+    expect(answer.receipt).toMatchObject({ outcome: "sent" });
+    expect(answer.receipt?.reason).toBeUndefined();
+    expect(pane.keysSeen.filter((key) => key === "Enter")).toHaveLength(1);
+    neverEscape(pane);
+  });
+
+  test("two paragraphs to claude mid-turn, a box with a different word: a mismatch, never submitted", async () => {
+    const typed = capture("typed").replace("menu should be", "menu could be");
+    expect(typed).not.toBe(capture("typed"));
+    const pane = replay(typed);
+    const answer = await rig({ pane, version: "2.1.316" }).send(TEXT);
+    expect(answer.receipt).toMatchObject({ outcome: "typed_not_submitted", reason: "mismatch" });
+    expect(pane.keysSeen).not.toContain("Enter");
+  });
+
+  test("two paragraphs to claude mid-turn, a box with one row missing: a mismatch, never submitted", async () => {
+    const rows = capture("typed").split("\n");
+    const at = rows.findIndex((row) => row.replace(SGR, "").startsWith("  the status bar and the close button"));
+    expect(at).toBeGreaterThan(0);
+    const pane = replay(["", ...rows.slice(0, at), ...rows.slice(at + 1)].join("\n"));
+    const answer = await rig({ pane, version: "2.1.316" }).send(TEXT);
+    expect(answer.receipt).toMatchObject({ outcome: "typed_not_submitted", reason: "mismatch" });
+    expect(pane.keysSeen).not.toContain("Enter");
+  });
+
+  test("two paragraphs to claude mid-turn, a row NEW under the footer: still the screen changed, never submitted", async () => {
+    const rows = capture("typed").split("\n");
+    const footer = plainRows("typed").findIndex((row) => row.includes("ctrl+g to edit in nano"));
+    expect(footer).toBeGreaterThan(0);
+    expect(rows[footer + 1]).toBe("");
+    rows[footer + 1] = "  Background task finished";
+    const pane = replay(rows.join("\n"));
+    const answer = await rig({ pane, version: "2.1.316" }).send(TEXT);
+    expect(answer.receipt).toMatchObject({ outcome: "typed_not_submitted", reason: "changed" });
+    expect(pane.keysSeen).not.toContain("Enter");
+  });
+});
+
 describe("OMP 18.12.2 `/goal` in a goal turn, replayed from the real capture (lab 2026-10-22)", () => {
   const PANES = join(import.meta.dir, "../../web/src/fixtures/panes");
   /** A capture's text, line breaks as the bridge's read takes them. */
