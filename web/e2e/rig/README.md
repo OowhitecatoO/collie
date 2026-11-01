@@ -288,6 +288,7 @@ handled; none of them holds a case red:
   in the terminal's name. The bridge reads a core terminal's name as the pane's label, and a walky talky
   header names its sender by it. A named terminal made pi's header differ from the Claude recording, and
   every later Claude case then missed its recording (M79 spec 03).
+- **Raw keys on other harnesses.** Under a CPU hog on every core (2026-11-01) 20 of 20 mid-turn Claude sends, 20 of 20 Codex sends and one opencode send ended `sent`; Kiro and Hermes are untested with raw keys on the core (not installed in the lab), and Windows ConPTY differs.
 - **A Claude case that is red stops the rest.** Claude's recordings replay one session in order. A card
   left up and then cleared with Escape puts "Request interrupted" into Claude's next prompt, and a case
   left out moves the session's first prompt. Either way every later Claude request misses its recording.
