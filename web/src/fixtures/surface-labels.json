@@ -2349,7 +2349,7 @@
   "cursor--after-skip.txt": {
    "harness": "cursor",
    "version": "2026.10.14",
-   "state": "other"
+   "state": "idle"
   },
   "cursor--ask-question.txt": {
    "harness": "cursor",
@@ -2382,6 +2382,11 @@
    "state": "idle"
   },
   "cursor--idle-after-turn.txt": {
+   "harness": "cursor",
+   "version": "2026.10.14",
+   "state": "idle"
+  },
+  "cursor--idle-bottom-docked.txt": {
    "harness": "cursor",
    "version": "2026.10.14",
    "state": "idle"
