@@ -249,7 +249,7 @@ describe("a screen the core marks partial decides nothing", () => {
     const answer = await send("hello there");
     expect(answer.receipt?.outcome).not.toBe("sent");
     expect(program.submitted).toEqual([]);
-    expect(fake.writes().flatMap((w) => (w.kind === "keys" ? w.payload : w.payload.filter((t) => t.includes("\r"))))).not.toContain("enter");
+    expect(fake.writes().flatMap((w) => (w.kind === "keys" ? w.payload : []))).not.toContain("enter");
     expect(fake.writes().some((w) => w.kind === "text" && w.payload.some((t) => t.includes("\r")))).toBe(false);
   });
 });

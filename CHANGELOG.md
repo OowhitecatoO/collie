@@ -23,6 +23,10 @@ Running a crew? Update the lead first; members follow on their own. Details:
 
 ## [Unreleased]
 
+### Fixed
+
+- **A send on the Herdr core no longer waits out the core's 3 s key hold.** The core answers a key about 3 s after a raw write, so Collie's probe Backspace and the submitting Enter each waited, and a send took about 6 s. Collie now types an unmodified Enter, Backspace and Tab as raw input, which the core takes at once. Keys with modifiers and every other named key still go by name, so a pi or omp submit with ctrl+q still waits once. Thanks @waynehoover (#637).
+
 ## [1.25.3] - 2026-10-31
 
 **Urgent.** Claude Code's session rating blocks every send from the phone until you dismiss it on the desktop.

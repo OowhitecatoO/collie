@@ -124,7 +124,6 @@ export class ManualClock implements FakeClock {
 /** The measured gap between a raw write and the answer to the next key press (HC_API.md § Typing, "The key hold"). */
 export const KEY_HOLD_MS = 3030;
 
-/** What the program in a terminal receives, for a test that draws a screen from its input. */
 /** The raw bytes a program cannot tell from a named key, and that key's name. */
 const RAW_KEY_BYTES = new Map<string, string>([
   ["\r", "enter"],
@@ -132,6 +131,7 @@ const RAW_KEY_BYTES = new Map<string, string>([
   ["\t", "tab"],
 ]);
 
+/** What the program in a terminal receives, for a test that draws a screen from its input. */
 export type FakeInput = { readonly kind: "text"; readonly text: string } | { readonly kind: "keys"; readonly keys: readonly string[] };
 
 interface FakeTerminal {
