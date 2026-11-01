@@ -61,6 +61,13 @@ const RAW_BY_CONTRACT_SPELLING = new Map<string, string>([
   ["Tab", "\t"],
 ]);
 
+/** True for the raw bytes of an unmodified Enter, Backspace or Tab: the writes the adapter paces (`RAW_KEY_GAP_MS`). */
+export function isRawKeyText(text: string): boolean {
+  return RAW_KEY_TEXTS.has(text);
+}
+
+const RAW_KEY_TEXTS: ReadonlySet<string> = new Set(RAW_BY_CONTRACT_SPELLING.values());
+
 /**
  * The single characters hc names as keys (probed): letters, digits and the unshifted punctuation of
  * a US keyboard. Any other character has no hc name.
