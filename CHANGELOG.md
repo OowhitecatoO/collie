@@ -23,6 +23,10 @@ Running a crew? Update the lead first; members follow on their own. Details:
 
 ## [Unreleased]
 
+### Fixed
+
+- **A send to a busy agent now waits a few seconds for its probe character.** Before Collie types a message, it types one probe character (`⌁`) and looks for it in the box. It looked for well under a second, so an agent that showed typed keys late refused the send with "the probe character did not show in the box", and the character showed in the box later. Claude Code with a subagent running does this (#623), and so does omp right after it starts on a busy machine. When the probe has not shown and the agent is not in a turn, Collie now looks twice more over about 3 seconds before it refuses. A probe that shows in that time is taken out again and the send goes on. A send to an agent that shows keys at once is not slower, and a send during a turn keeps its own rules. The refusal after the wait is the same as before, and the receipt's probe time shows the whole wait.
+
 ## [1.25.4] - 2026-11-01
 
 ### Fixed

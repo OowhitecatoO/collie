@@ -11,7 +11,9 @@
 //           and no other change, Backspace through the gate, require the S0 box again. A probe that
 //           fails with its character standing once in the box gets one Backspace and one more read.
 //           The bound counts only the reads: the two writes are outside it (`probeWrite` in gapsMs,
-//           and the request's bound grows by them), and the Backspace half always gets time for one read
+//           and the request's bound grows by them), and the Backspace half always gets time for one read.
+//           A probe that showed nowhere on a pane whose turn is idle reads on for LATE_PROBE (2, 3200)
+//           before it refuses (the late-probe window, below)
 //   write   the whole text in one write per line (a bracketed paste where the multiplexer and the
 //           profile allow it); a line break is the profile's newline key, through the gate. Where
 //           the multiplexer frames a paste itself (`pasteBlock`), a long or multi-line message is ONE
@@ -163,6 +165,14 @@
 // refusal carries the cause `late_keys` and says to wait and send again, not to redraw the pane; the
 // keys and the stale mark are the same as above. A late box is a reading of one moment, not a fix:
 // the send is still refused, and the next send takes the characters out once the agent draws again.
+// The late-probe window (M80 spec 09, 2026-11-01) is the fix for the first send: when the probe's own
+// reads saw the screen without the character and the pane's turn read idle at S0, the probe reads on
+// for LATE_PROBE before it refuses. A character that shows in that window is a live probe, and the send
+// goes on from there (Backspace, the text, Enter); one that still shows nowhere ends `probe_failed` as
+// before, and `gapsMs.probe` carries the whole wait. A free, responsive pane never waits for it: the
+// window opens only after the probe's reads saw nothing. A running turn keeps its own rules (queue, hold).
+// One rule for every harness: omp 18.6.1 right after its start under load (the browser leg's model
+// picker, M80 spec 08) refused the same way, its box idle and empty, the probe read twice in 242 ms.
 //
 // A placeholder on a read with no styling (M78 spec 06, 2026-10-30): a multiplexer that hands out plain
 // text (herdr-core) drops the faint attribute and the colour that mark an empty box's placeholder, so a
@@ -278,6 +288,17 @@ export const BOUNDS = {
   /** A notice's digit, written with no submit key: the notice gone and the box empty (it takes S1's and S2's place). */
   notice: { reads: 6, ms: 2000 },
 } as const;
+
+/**
+ * The late-probe window (the header, M80 spec 09): when the probe showed nowhere and the pane's turn is
+ * idle, it reads twice more inside this many ms before it refuses. A busy agent takes typed keys and draws
+ * them seconds late: Claude Code 2.1.314 with a subagent running drew Collie's probes several seconds
+ * after the probe's reads ended (#623), and omp 18.6.1 drew its first keys late right after its start on
+ * a loaded machine (M80 spec 08). The reads come 1000 and 3000 ms after the probe's own reads ended
+ * (`firstGapMs`, then twice that), and the last one has 200 ms to come back inside the window. The
+ * request's bound grows by it.
+ */
+export const LATE_PROBE = { reads: 2, ms: 3200, firstGapMs: 1000 } as const;
 
 /** The session lock's bound: the sum of the step bounds a send can take (the notice wait stands in for S1 and S2). A request past it ends `unknown`. */
 export const LOCK_BOUND_MS = BOUNDS.s0.ms + BOUNDS.probe.ms + BOUNDS.s1.ms + BOUNDS.s2.ms;
@@ -4813,12 +4834,12 @@ export class SendProtocol {
   private async poll(
     state: RunState,
     step: string,
-    bound: { reads: number; ms: number },
+    bound: { readonly reads: number; readonly ms: number; readonly firstGapMs?: number },
     test: (snap: Snap) => Verdict | "again",
     againMs = FIRST_GAP_MS,
   ): Promise<{ snap: Snap | null; verdict: Verdict; reads: number }> {
     const until = Math.min(this.now() + bound.ms, state.deadline);
-    let gap = FIRST_GAP_MS;
+    let gap = bound.firstGapMs ?? FIRST_GAP_MS;
     let again = false;
     let last: Snap | null = null;
     let reads = 0;
@@ -4894,7 +4915,7 @@ export class SendProtocol {
     // it decide, as at S1 (2026-10-17). Commands and manual sends keep the full compare below.
     const boxOnly = s0.frame !== null && !state.command && !state.manual && queuesInTurn(state.match);
     const typedFrom = this.now();
-    const typed = await this.poll(state, "probe", { reads: budget.reads - 1, ms: budget.ms }, (snap) => {
+    const shows = (snap: Snap): Verdict => {
       if (s0.frame !== null) {
         // Queued: the Surface's claim of a modal over a found box fails, and so do two reads in a row
         // with no box. One read with no box may be torn, and its Surface claims nothing to trust.
@@ -4920,7 +4941,14 @@ export class SendProtocol {
       if (snap.plain.join("\n") === s0.plain.join("\n")) return "wait";
       landing = probeLanding(s0.plain, snap.plain, probe, { freeBelow: state.manual });
       return landing !== null && !cueAppeared(s0, snap) ? "pass" : "fail";
-    });
+    };
+    let typed = await this.poll(state, "probe", { reads: budget.reads - 1, ms: budget.ms }, shows);
+    if (this.lateWindowOpens(state, s0, typed, probe)) {
+      // The late-probe window (the header): a busy agent draws a typed key seconds late (#623).
+      this.stretch(state, LATE_PROBE.ms);
+      const late = await this.poll(state, "probe", LATE_PROBE, shows);
+      typed = { snap: late.snap ?? typed.snap, verdict: late.verdict, reads: typed.reads + late.reads };
+    }
     const spent = this.now() - typedFrom;
     // A box on screen that showed no probe at all, on a pane where its harness is starting: the box is
     // drawn but reads no keys yet. The character waits in the terminal and shows later, where the next
@@ -4958,6 +4986,17 @@ export class SendProtocol {
       throw failed(unproven ? unconfirmedClean(probe) : "Backspace did not give the box back as it was.", back.snap);
     }
     return landing;
+  }
+
+  /**
+   * Whether the late-probe window opens ({@link LATE_PROBE}, the header): the probe's reads saw the
+   * screen and no character on it, and the pane's turn read idle at S0. A running turn, a queued or
+   * streamed send, and a probe that showed somewhere (it failed, or went elsewhere) keep today's path.
+   */
+  private lateWindowOpens(state: RunState, s0: Snap, typed: { readonly snap: Snap | null; readonly verdict: Verdict }, probe: string): boolean {
+    if (typed.verdict !== "wait" || typed.snap === null) return false;
+    if (s0.surface.turn !== "idle" || state.queued || state.streamed) return false;
+    return countIn(typed.snap.texts, probe) === countIn(s0.texts, probe);
   }
 
   /**
