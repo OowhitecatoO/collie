@@ -271,7 +271,7 @@ What looks different on the core:
 - **Some dialogs cannot be answered from the phone yet.** A dialog of pi, opencode or Oh My Pi that
   marks the chosen row by colour alone shows no tappable options on the core, because the core sends
   no colour. The card offers Escape, and you answer on the screen. This waits for a colour option in
-  the core (`HC_API.md` lists the ask). Claude and Codex dialogs are read from their words and work.
+  the core, asked for in [herdr-core issue 68](https://github.com/herdrdev/herdr-core/issues/68). Claude and Codex dialogs are read from their words and work.
   So does pi's question, when the core answers the read.
 - **The mirror shows the screen; older lines come when you ask.** The core holds a terminal's keys
   while it reads older lines, and under a dialog one such read takes about 25 seconds. So the phone's
