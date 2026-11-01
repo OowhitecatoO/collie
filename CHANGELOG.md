@@ -23,6 +23,10 @@ Running a crew? Update the lead first; members follow on their own. Details:
 
 ## [Unreleased]
 
+### Fixed
+
+- **A send refused because a busy agent showed Collie's keys late now says to wait, not to redraw.** Claude Code 2.1.314 with a subagent running under its agents footer can take seconds to show typed keys, so a send was refused when its probe character did not show, and the characters showed in the box later. The next send found only those characters, its own probe was late too, and it was refused with "the pane may need a redraw; focus it on the desktop or resize it", which does not help. That refusal now carries the cause `late_keys` and says the agent took the keys but showed them late, so wait and send again; Collie takes the characters out first. A box that holds any other text keeps the redraw advice. Thanks @nogara (#623).
+
 ## [1.25.3] - 2026-10-31
 
 **Urgent.** Claude Code's session rating blocks every send from the phone until you dismiss it on the desktop.
