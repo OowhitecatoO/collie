@@ -23,6 +23,10 @@ Running a crew? Update the lead first; members follow on their own. Details:
 
 ## [Unreleased]
 
+### Fixed
+
+- **A report from the phone's Report a problem button no longer arrives with an empty body.** A long screen could push the link past what GitHub accepts, and GitHub then dropped the whole body and kept only the title. The link now stays under 4800 characters, which leaves room for GitHub's sign-in redirect. Rows of spaces no longer take that room, the screen is cut from its top with a "... N rows cut" line so the input box stays, and the signature line and the setup are never cut. When the report still does not fit, Open on GitHub copies the whole report first and opens an issue that says the report is on your clipboard; if the copy fails, nothing opens.
+
 ## [1.25.4] - 2026-11-01
 
 ### Fixed
