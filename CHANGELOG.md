@@ -23,6 +23,10 @@ Running a crew? Update the lead first; members follow on their own. Details:
 
 ## [Unreleased]
 
+### Fixed
+
+- **A message with rule rows now reaches pi.** A message with a line of `────` of its own, such as a table border or a markdown rule, was typed into pi's box in full and then left there unsent. Collie took the typed rule for the top edge of pi's box and read only the text under it. Collie now reads a rule that is narrower than the box as part of your message. A typed rule as wide as the box still reads as the box edge.
+
 ## [1.25.4] - 2026-11-01
 
 ### Fixed
