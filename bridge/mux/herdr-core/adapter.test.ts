@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { HerdrCoreMux } from "./adapter.ts";
-import { FakeHcCore } from "./fake-core.ts";
+import { HerdrCoreMux, RAW_KEY_GAP_MS } from "./adapter.ts";
+import { FakeHcCore, ManualClock } from "./fake-core.ts";
 import { IMPLICIT_SPACE_ID } from "./layout.ts";
 
 /** One fake core and the adapter over it. */
@@ -204,5 +204,74 @@ describe("HerdrCoreMux over a fake core", () => {
     fake.setStatus("t3", { state: "working", app: "codex", kind: "" });
     expect(topology).toBe(2);
     watch.close();
+  });
+});
+
+describe("the raw key gap (RAW_KEY_GAP_MS)", () => {
+  /** The adapter on a manual clock: a wait moves the clock and costs no real time. */
+  function paced() {
+    const fake = new FakeHcCore();
+    const clock = new ManualClock();
+    const waits: number[] = [];
+    const adapter = new HerdrCoreMux(fake, "/home/dev", {
+      clock: { now: () => clock.now(), wait: (ms) => (waits.push(ms), clock.wait(ms)) },
+    });
+    return { fake, adapter, clock, waits };
+  }
+
+  test("a raw Enter right after a text write waits until the floor has passed", async () => {
+    const { adapter, clock, waits } = paced();
+    clock.ms = 1000;
+    await adapter.typeText("t2", "hello");
+    const sent = await adapter.writeKeys("t2", ["Enter"]);
+    expect(sent.ok).toBe(true);
+    expect(waits).toEqual([RAW_KEY_GAP_MS]);
+    expect(clock.now()).toBe(1000 + RAW_KEY_GAP_MS);
+  });
+
+  test("a raw Enter after the floor is not delayed, and a gap already partly spent waits only the rest", async () => {
+    const { adapter, clock, waits } = paced();
+    clock.ms = 1000;
+    await adapter.typeText("t2", "hello");
+    clock.ms += 200;
+    await adapter.writeKeys("t2", ["Enter"]);
+    expect(waits).toEqual([]);
+    clock.ms += 100;
+    await adapter.writeKeys("t2", ["Backspace"]);
+    expect(waits).toEqual([RAW_KEY_GAP_MS - 100]);
+  });
+
+  test("a pane that was never written to, and another pane's write, add no wait", async () => {
+    const { adapter, waits } = paced();
+    await adapter.writeKeys("t2", ["Enter"]);
+    await adapter.typeText("t3", "x");
+    expect(waits).toEqual([]);
+    await adapter.writeKeys("t3", ["Enter"]);
+    expect(waits).toEqual([RAW_KEY_GAP_MS]);
+  });
+
+  test("text and a raw key never share one write, and the order holds", async () => {
+    const { fake, adapter } = paced();
+    await adapter.typeText("t2", "hello");
+    await adapter.writeKeys("t2", ["$", "Enter", "Backspace", "Tab"]);
+    expect(fake.writes().map((w) => [w.kind, w.payload])).toEqual([
+      ["text", ["hello"]],
+      ["text", ["$"]],
+      ["text", ["\r"]],
+      ["text", ["\x7f"]],
+      ["text", ["\t"]],
+    ]);
+  });
+
+  test("a modified key goes by name and is not delayed", async () => {
+    const { fake, adapter, waits } = paced();
+    await adapter.typeText("t2", "hello");
+    const sent = await adapter.writeKeys("t2", ["ctrl+c", "shift+Tab"]);
+    expect(sent.ok).toBe(true);
+    expect(waits).toEqual([]);
+    expect(fake.writes().map((w) => [w.kind, w.payload])).toEqual([
+      ["text", ["hello"]],
+      ["keys", ["ctrl+c", "shift+tab"]],
+    ]);
   });
 });
