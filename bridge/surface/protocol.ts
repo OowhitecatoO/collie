@@ -173,6 +173,15 @@
 // window opens only after the probe's reads saw nothing. A running turn keeps its own rules (queue, hold).
 // One rule for every harness: omp 18.6.1 right after its start under load (the browser leg's model
 // picker, M80 spec 08) refused the same way, its box idle and empty, the probe read twice in 242 ms.
+// A probe that shows in the window but changed more than the box gets one second chance (2026-11-01,
+// the first Herdr leg with the window: omp's first redraw after its start painted the whole screen
+// with the probe, so S0's rows were stale, `probe 3337`, "changed more than the box"). The cleanup
+// takes the character out as before; then a fresh S0 must read the turn idle, no modal, the box as S0
+// had it, no new cue and no new row under the box (a popup the probe opened and that stayed fails
+// here), and the probe goes once more from that read with the probe's own bound and the full compare,
+// no window. Its pass carries the request on from the fresh read; anything else ends as the first
+// probe did. Once per send, only after a probe the window showed; `keys` holds both probes, and
+// `gapsMs.probe` the whole wait.
 //
 // A placeholder on a read with no styling (M78 spec 06, 2026-10-30): a multiplexer that hands out plain
 // text (herdr-core) drops the faint attribute and the colour that mark an empty box's placeholder, so a
@@ -4000,7 +4009,15 @@ export class SendProtocol {
       ([...text].length >= 1 && [...text].length <= SHORT_TEXT));
     let landing: Landing | null = null;
     try {
-      if (state.probed) landing = await this.probe(state, s0, prefix);
+      if (state.probed) {
+        const probed = await this.probe(state, s0, prefix);
+        landing = probed.landing;
+        // A late probe's second chance went from a fresh S0 (the header): the request goes on from it.
+        if (probed.base !== s0) {
+          s0 = probed.base;
+          state.marks.s0 = s0;
+        }
+      }
     } finally {
       // Lapped on a failed probe too, so its receipt says where the time went.
       this.lapProbe(state);
@@ -4899,7 +4916,7 @@ export class SendProtocol {
    * The probe: the character, then Backspace; the box must take exactly it and give it back. A manual
    * send lets the rows under the box and the rest of the box change (see the header).
    */
-  private async probe(state: RunState, s0: Snap, prefix: string): Promise<Landing | null> {
+  private async probe(state: RunState, s0: Snap, prefix: string, again = false): Promise<{ readonly landing: Landing | null; readonly base: Snap }> {
     const probe = probeCharOf(state.match);
     const failed = (detail: string, snap: Snap | null): Ended => new Ended("refused", "probe_failed", sawNote(snap, { detail, framed: s0.frame !== null }));
     // Reads are shared across the two halves: the character may take two, Backspace gets the rest. The
@@ -4943,11 +4960,13 @@ export class SendProtocol {
       return landing !== null && !cueAppeared(s0, snap) ? "pass" : "fail";
     };
     let typed = await this.poll(state, "probe", { reads: budget.reads - 1, ms: budget.ms }, shows);
-    if (this.lateWindowOpens(state, s0, typed, probe)) {
+    let shownLate = false;
+    if (!again && this.lateWindowOpens(state, s0, typed, probe)) {
       // The late-probe window (the header): a busy agent draws a typed key seconds late (#623).
       this.stretch(state, LATE_PROBE.ms);
       const late = await this.poll(state, "probe", LATE_PROBE, shows);
       typed = { snap: late.snap ?? typed.snap, verdict: late.verdict, reads: typed.reads + late.reads };
+      shownLate = late.verdict !== "wait";
     }
     const spent = this.now() - typedFrom;
     // A box on screen that showed no probe at all, on a pane where its harness is starting: the box is
@@ -4961,7 +4980,14 @@ export class SendProtocol {
       const screen = boxOnly ? (typed.snap?.otherScreen ?? null) : null;
       const why =
         typed.verdict === "wait" ? "The probe character did not show in the box." : screen !== null ? probeOtherScreen(screen) : "The probe character changed more than the box.";
-      throw await this.probeCleanup(state, s0, typed.snap, probe, why);
+      const ended = await this.probeCleanup(state, s0, typed.snap, probe, why);
+      // A late probe that came with a repaint of the whole screen (the header): S0's rows are stale, so
+      // the probe goes once more from a fresh S0. Once per send, and only after the window showed it.
+      if (shownLate && typed.verdict === "fail" && screen === null && ended.extra.probeClean === true) {
+        const fresh = await this.lateBaseline(state, s0);
+        if (fresh !== null) return this.probe(state, fresh, prefix, true);
+      }
+      throw ended;
     }
 
     try {
@@ -4985,7 +5011,29 @@ export class SendProtocol {
       const unproven = state.starting || back.snap === null || (s0.frame !== null && back.snap.frame === null);
       throw failed(unproven ? unconfirmedClean(probe) : "Backspace did not give the box back as it was.", back.snap);
     }
-    return landing;
+    return { landing, base: s0 };
+  }
+
+  /**
+   * The fresh S0 a late probe's second chance goes from (the header): the same S0 read, and it must
+   * show the turn idle, no modal, the box as S0 had it (empty, or the draft it held), no cue S0 did not
+   * have and no more rows under the box. Null when it does not, or when it does not read twice alike:
+   * the first probe's refusal stands then. The request's bound grows by an S0 and a probe.
+   */
+  private async lateBaseline(state: RunState, s0: Snap): Promise<Snap | null> {
+    if (s0.frame === null) return null;
+    this.stretch(state, BOUNDS.s0.ms + BOUNDS.probe.ms);
+    let fresh: Snap;
+    try {
+      fresh = await this.stableRead(state, "s0");
+    } catch (err) {
+      if (err instanceof Ended && err.outcome === "refused") return null;
+      throw err;
+    }
+    if (fresh.frame === null || fresh.surface.turn !== "idle" || fresh.surface.modal !== "none") return null;
+    if (boxText(fresh.frame) !== boxText(s0.frame)) return null;
+    if (cueAppeared(s0, fresh) || fresh.below > s0.below) return null;
+    return fresh;
   }
 
   /**
