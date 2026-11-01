@@ -17,7 +17,7 @@ import { findInputFrame } from "../../web/src/lib/surface/frame.ts";
 import { surfaceOfScreen } from "../../web/src/lib/surface/fold.ts";
 import { isFree, type Surface, type SurfaceTurn } from "../../web/src/lib/surface/surface.ts";
 import { KeyGate } from "./key-gate.ts";
-import { BOUNDS, BOX_CHANGED, boxMatches, COMMAND_SETTLE_MS, boxMatchesTail, commandBoxMatches, GENERIC_PROBE, uploadAlone, wholePaste, LOCK_BOUND_MS, locateText, neverHeldEntry, probeLanding, RowRing, runsInTurnEntry, SendProtocol, SessionLocks, STALE_SCREEN, steadyRow, type SendDeps, type SendRequest } from "./protocol.ts";
+import { BOUNDS, BOX_CHANGED, LATE_PROBE, boxMatches, COMMAND_SETTLE_MS, boxMatchesTail, commandBoxMatches, GENERIC_PROBE, uploadAlone, wholePaste, LOCK_BOUND_MS, locateText, neverHeldEntry, probeLanding, RowRing, runsInTurnEntry, SendProtocol, SessionLocks, STALE_SCREEN, steadyRow, type SendDeps, type SendRequest } from "./protocol.ts";
 import { RequestStore } from "./requests.ts";
 import { SurfaceLedger } from "./counters.ts";
 import { HoldStore } from "./holds.ts";
@@ -26,6 +26,7 @@ import { AuditLog } from "../audit.ts";
 import { heldCancelRoute, sendReceiptsRoute, sendRoute, type SendRouteRuntime } from "../server.ts";
 import { RETURNED_CARD_DROPPED } from "../../web/src/lib/surface/send.ts";
 import { QUEUED_SEND_MS, type BoxReading } from "./queued.ts";
+import { LaunchWindow } from "../launch-window.ts";
 
 const RULE = "─".repeat(40);
 const WIDTH = 38;
@@ -2988,7 +2989,7 @@ describe("the probe", () => {
     expect(pane.calls).toEqual([`type:${PROBE}`]);
   });
 
-  test("the probe takes at most three reads", async () => {
+  test("the probe takes at most three reads, and the late-probe window two more on an idle pane", async () => {
     const { pane, send } = rig({ version: "2.1.999" });
     let probeReads = 0;
     pane.beforeRead = (p) => {
@@ -2996,7 +2997,7 @@ describe("the probe", () => {
     };
     pane.swallow = true;
     await send("hello there");
-    expect(probeReads).toBeLessThanOrEqual(3);
+    expect(probeReads).toBeLessThanOrEqual(BOUNDS.probe.reads + LATE_PROBE.reads);
   });
 
   // A herdr-core crew member on minibuch (2026-10-30): keys ["probe", "Backspace"], `probe_failed`,
@@ -10738,5 +10739,125 @@ describe("the usage-limit row under a fresh Claude Code box (2.1.312)", () => {
     const { send } = rig({ pane });
     expect((await send(text)).receipt?.outcome).toBe("typed_not_submitted");
     expect(pane.keysSeen).not.toContain("Enter");
+  });
+});
+
+// The late-probe window (M80 spec 09, 2026-11-01). A busy agent takes typed keys and draws them seconds
+// late: Claude Code 2.1.314 with a subagent running drew Collie's probes after the probe's reads had
+// ended, so three sends in ten seconds refused `probe_failed` on an empty box (#623). omp 18.6.1 did the
+// same right after its start on a loaded machine: the browser leg's model picker refused its first tap
+// four times in a week, the box idle and empty, the probe read twice in 242 ms (M80 spec 08). When the
+// probe's reads saw the screen without the character and the turn read idle, the probe reads on.
+describe("the late-probe window: a probe drawn late on an idle pane (M80 spec 09, #623)", () => {
+  /** The pane draws each probe character only once the rig's clock reaches `due(writtenAt)`: the agent is busy. */
+  const probeShowsAt = (r: Rig, due: (writtenAt: number) => number): void => {
+    const waiting: number[] = [];
+    r.pane.afterInput = (p, what) => {
+      if (what !== `type:${PROBE}` || !p.box.endsWith(PROBE)) return;
+      p.box = p.box.slice(0, -PROBE.length);
+      waiting.push(due(r.clock.now));
+    };
+    r.pane.beforeRead = (p) => {
+      while (waiting.length > 0 && waiting[0]! <= r.clock.now) {
+        waiting.shift();
+        p.box += PROBE;
+        p.revision++;
+      }
+    };
+  };
+
+  test("a probe drawn late, 1.5 s after its write, shows in the window and the send goes on: no probe character stays", async () => {
+    const r = rig({ version: "2.1.999" });
+    probeShowsAt(r, (at) => at + 1500);
+    const answer = await r.send("hello there");
+    expect(answer.receipt).toMatchObject({ outcome: "sent", keys: ["probe", "Backspace", "Enter"] });
+    expect(r.pane.transcript.at(-1)).toBe("> hello there");
+    expect(r.pane.box).toBe("");
+    // The probe's reads (80 + 160 ms), the window's first read 1000 ms on, its second 2000 ms after that
+    // (3240 ms after the write, where the character shows), then the Backspace read.
+    expect(answer.receipt?.gapsMs.probe).toBe(80 + 160 + LATE_PROBE.firstGapMs * 3 + 80);
+  });
+
+  test("a probe drawn 5 s late refuses after the window, gapsMs.probe holds the whole wait; once drawn, the next send takes it out", async () => {
+    const r = rig({ version: "2.1.999" });
+    let lateBy = 5000;
+    probeShowsAt(r, (at) => at + lateBy);
+    const first = await r.send("hello there");
+    expect(first.receipt).toMatchObject({ outcome: "refused", reason: "probe_failed", keys: ["probe"] });
+    expect(first.receipt?.detail).toContain("The probe character did not show in the box.");
+    expect(first.receipt?.gapsMs.probe).toBeGreaterThanOrEqual(LATE_PROBE.ms);
+    expect(r.pane.transcript.at(-1)).not.toBe("> hello there");
+    // The agent draws the character at last and answers at once from then on: the box holds Collie's
+    // own residue, which the next send takes out (the late-keys cleanup, #623) before its own probe.
+    r.clock.now += 5000;
+    lateBy = 0;
+    expect((await r.send("", { mode: "prepare" })).surface).toMatchObject({ turn: "idle", composer: "draft" });
+    expect(r.pane.box).toBe(PROBE);
+    const second = await r.send("hello there");
+    expect(second.receipt).toMatchObject({ outcome: "sent", keys: ["probe", "Backspace", "Backspace", "probe", "Backspace", "Enter"] });
+    expect(r.pane.transcript.at(-1)).toBe("> hello there");
+    expect(r.pane.box).toBe("");
+  });
+
+  test("a free, responsive pane never opens the probe window: the probe takes its reads as before", async () => {
+    const r = rig({ version: "2.1.999" });
+    const answer = await r.send("hello there");
+    expect(answer.receipt).toMatchObject({ outcome: "sent", keys: ["probe", "Backspace", "Enter"] });
+    expect(answer.receipt?.gapsMs.probe).toBe(160);
+  });
+
+  test("a running turn keeps today's path: no probe window, the probe refuses inside its own bound", async () => {
+    const { pane, send } = omp();
+    pane.inTurn = true;
+    pane.swallow = true;
+    const answer = await send("look at the tests too");
+    expect(answer.receipt).toMatchObject({ outcome: "refused", reason: "probe_failed" });
+    expect(answer.receipt?.gapsMs.probe).toBeLessThanOrEqual(BOUNDS.probe.ms);
+  });
+
+  test("omp's first redraw after its start is slow: a pane that echoes nothing for 1.5 s, then echoes, opens /model on the first tap (slow echo)", async () => {
+    // The leg's omp case 1, the first case after omp's start: the launch window is open (`POST /api/launch`),
+    // the box reads idle and empty, and omp draws nothing typed until its first redraw.
+    const made = omp();
+    const window = new LaunchWindow(() => made.clock.now);
+    window.mark("main", "%1", "omp");
+    const started = made.clock.now;
+    probeShowsAt(made, () => started + 1500);
+    const protocol = new SendProtocol({
+      ...made.deps,
+      starting: (paneId, named) => window.starting("main", paneId, named),
+      framed: (paneId, harness) => window.framed("main", paneId, harness),
+      deaf: (paneId, harness, typedAt) => window.deaf("main", paneId, harness, typedAt),
+      pending: (paneId) => window.pending("main", paneId),
+    });
+    const answer = await protocol.handle({ id: nextId(), text: "/model", mode: "command" }, { session: "main", paneId: "%1", harness: "omp" });
+    expect(answer.receipt).toMatchObject({ outcome: "sent", keys: ["probe", "Backspace", "Enter"] });
+    expect(answer.receipt?.detail).toBeUndefined();
+    expect(made.pane.transcript.at(-1)).toBe("> /model");
+    expect(made.pane.box).toBe("");
+    // The window took the character: the probe read past its own bound.
+    expect(answer.receipt?.gapsMs.probe).toBeGreaterThan(BOUNDS.probe.ms);
+    // The box took a key: the launch window ends, and no probe character is pending on the pane.
+    expect(window.pending("main", "%1")).toBe(0);
+  });
+
+  test("a first redraw later than the window still refuses the first tap with the starting words, as the leg saw it", async () => {
+    // The same pane, its first redraw past the window: the leg's receipt, `probe_failed` with the launch window's words.
+    const made = omp();
+    const window = new LaunchWindow(() => made.clock.now);
+    window.mark("main", "%1", "omp");
+    const started = made.clock.now;
+    probeShowsAt(made, () => started + 10_000);
+    const protocol = new SendProtocol({
+      ...made.deps,
+      starting: (paneId, named) => window.starting("main", paneId, named),
+      framed: (paneId, harness) => window.framed("main", paneId, harness),
+      deaf: (paneId, harness, typedAt) => window.deaf("main", paneId, harness, typedAt),
+      pending: (paneId) => window.pending("main", paneId),
+    });
+    const answer = await protocol.handle({ id: nextId(), text: "/model", mode: "command" }, { session: "main", paneId: "%1", harness: "omp" });
+    expect(answer.receipt).toMatchObject({ outcome: "refused", reason: "probe_failed", keys: ["probe"], saw: { turn: "idle", modal: "none", composer: "empty" } });
+    expect(answer.receipt?.detail).toContain("The omp input box does not take keys yet; it may still be starting.");
+    expect(answer.receipt?.gapsMs.probe).toBeGreaterThanOrEqual(LATE_PROBE.ms);
   });
 });
