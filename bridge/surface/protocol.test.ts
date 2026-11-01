@@ -10996,6 +10996,93 @@ describe("the late-probe window: a probe drawn late on an idle pane (M80 spec 09
     expect(window.pending("main", "%1")).toBe(0);
   });
 
+  /** A protocol on `made`'s pane with one session's launch window open for omp, as after `POST /api/launch`. */
+  const launchedOmp = (made: Rig): ((text: string) => Promise<SendAnswer>) => {
+    const window = new LaunchWindow(() => made.clock.now);
+    window.mark("main", "%1", "omp");
+    const protocol = new SendProtocol({
+      ...made.deps,
+      starting: (paneId, named) => window.starting("main", paneId, named),
+      framed: (paneId, harness) => window.framed("main", paneId, harness),
+      deaf: (paneId, harness, typedAt) => window.deaf("main", paneId, harness, typedAt),
+      pending: (paneId) => window.pending("main", paneId),
+    });
+    return (text) => protocol.handle({ id: nextId(), text, mode: "command" }, { session: "main", paneId: "%1", harness: "omp" });
+  };
+
+  /**
+   * The pane draws nothing typed until `at` on the rig's clock, then repaints the whole screen (every row
+   * above the box new) with the probe character in the box: omp's first redraw after its start.
+   */
+  const repaintsWithProbeAt = (made: Rig & { pane: OmpPane }, at: number, repaints = 1): void => {
+    let held = 0;
+    let painted = 0;
+    made.pane.afterInput = (p, what) => {
+      if (what !== `type:${PROBE}` || !p.box.endsWith(PROBE)) return;
+      if (made.clock.now >= at && painted >= repaints) return;
+      p.box = p.box.slice(0, -PROBE.length);
+      held++;
+    };
+    made.pane.beforeRead = (p) => {
+      if (held === 0 || made.clock.now < at) return;
+      painted++;
+      // Words, not a counter: the rows above omp's box may tick (a number that moves is no new row).
+      const word = painted % 2 === 1 ? "welcome" : "settled";
+      p.transcript = p.transcript.map((_, i) => ` omp ${word} screen, row ${"abcdefghijklmnopqrstuvwxyz"[i % 26]!}`);
+      p.box += PROBE.repeat(held);
+      held = 0;
+      p.revision++;
+    };
+  };
+
+  test("omp's first redraw after its start repaints the whole screen with the late probe: the probe goes once more from a fresh S0, and /model goes on (first redraw)", async () => {
+    // The first Herdr leg with the window (2026-11-01T21-04-12Z): `probe 3337`, "The probe character changed
+    // more than the box. One Backspace removed the probe character", then a second tap went `sent`.
+    const made = omp();
+    repaintsWithProbeAt(made, made.clock.now + 1500);
+    const answer = await launchedOmp(made)("/model");
+    expect(answer.receipt).toMatchObject({ outcome: "sent", keys: ["probe", "Backspace", "probe", "Backspace", "Enter"] });
+    expect(answer.receipt?.detail).toBeUndefined();
+    expect(answer.receipt?.gapsMs.probe).toBeGreaterThan(LATE_PROBE.firstGapMs);
+    expect(made.pane.transcript.at(-1)).toBe("> /model");
+    expect(made.pane.box).toBe("");
+  });
+
+  test("the second chance is taken once: a pane that repaints with every probe refuses as the first probe did, after two probes", async () => {
+    const made = omp();
+    repaintsWithProbeAt(made, made.clock.now + 1500, 2);
+    const answer = await launchedOmp(made)("/model");
+    expect(answer.receipt).toMatchObject({ outcome: "refused", reason: "probe_failed", keys: ["probe", "Backspace", "probe", "Backspace"] });
+    expect(answer.receipt?.detail).toContain("The probe character changed more than the box. One Backspace removed the probe character");
+    expect(made.pane.box).toBe("");
+    expect(made.pane.transcript.at(-1)).not.toBe("> /model");
+  });
+
+  test.each([
+    ["a dialog", DIALOG],
+    ["a list of plain rows under the box", ["  first match", "  second match"]],
+  ])("a late probe that opens a popup which stays after its Backspace refuses as today: the fresh S0 still shows %s, no second probe", async (_name, popup) => {
+    const r = rig({ version: "2.1.999" });
+    let due: number | null = null;
+    r.pane.afterInput = (p, what) => {
+      if (what !== `type:${PROBE}` || !p.box.endsWith(PROBE)) return;
+      p.box = p.box.slice(0, -PROBE.length);
+      due = r.clock.now + 1500;
+    };
+    r.pane.beforeRead = (p) => {
+      if (due === null || r.clock.now < due) return;
+      due = null;
+      p.box += PROBE;
+      p.popup = popup;
+      p.revision++;
+    };
+    const answer = await r.send("hello there");
+    expect(answer.receipt).toMatchObject({ outcome: "refused", reason: "probe_failed", keys: ["probe", "Backspace"] });
+    expect(answer.receipt?.detail).toContain("The probe character changed more than the box. One Backspace removed the probe character");
+    expect(r.pane.calls.filter((call) => call === `type:${PROBE}`)).toHaveLength(1);
+    expect(r.pane.transcript.at(-1)).not.toBe("> hello there");
+  });
+
   test("a first redraw later than the window still refuses the first tap with the starting words, as the leg saw it", async () => {
     // The same pane, its first redraw past the window: the leg's receipt, `probe_failed` with the launch window's words.
     const made = omp();
